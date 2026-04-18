@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Space Shooter</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a0a1a;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Courier New', monospace;
+      color: #eee;
+      overflow: hidden;
+    }
+    h1 {
+      font-size: 1.8rem;
+      letter-spacing: 6px;
+      color: #e94560;
+      margin-bottom: 10px;
+      text-transform: uppercase;
+    }
+    #hud {
+      display: flex;
+      gap: 40px;
+      margin-bottom: 10px;
+      font-size: 1rem;
+      letter-spacing: 2px;
+    }
+    #hud span { color: #a8dadc; }
+    #hud b { color: #fff; }
+    canvas {
+      border: 2px solid #1a1a4a;
+      border-radius: 4px;
+      background: #050510;
+      display: block;
+    }
+    #overlay {
+      position: absolute;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      pointer-events: none;
+    }
+    #overlay.hidden { display: none; }
+    #overlay h2 { font-size: 2.5rem; letter-spacing: 4px; color: #e94560; }
+    #overlay p { color: #a8dadc; font-size: 1rem; letter-spacing: 2px; }
+    #overlay .sub { color: #555; font-size: 0.85rem; }
+    #controls-hint {
+      margin-top: 10px;
+      font-size: 0.75rem;
+      color: #444;
+      letter-spacing: 1px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Space Shooter</h1>
+  <div id="hud">
+    <div><span>SCORE </span><b id="score-val">0</b></div>
+    <div><span>LEVEL </span><b id="level-val">1</b></div>
+    <div><span>LIVES </span><b id="lives-val">♥ ♥ ♥</b></div>
+  </div>
+  <div style="position:relative;">
+    <canvas id="c" width="600" height="520"></canvas>
+    <div id="overlay">
+      <h2 id="ol-title">SPACE SHOOTER</h2>
+      <p id="ol-msg">Defend the galaxy!</p>
+      <p id="ol-sub" class="sub">← → to move &nbsp;|&nbsp; SPACE to shoot</p>
+    </div>
+  </div>
+  <div id="controls-hint">← → MOVE &nbsp;|&nbsp; SPACE SHOOT &nbsp;|&nbsp; ENTER START</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const overlay = document.getElementById('overlay');
+const olTitle = document.getElementById('ol-title');
+const olMsg = document.getElementById('ol-msg');
+const olSub = document.getElementById('ol-sub');
+
+// --- State ---
+let state = 'title'; // title | playing | dead | win | gameover
+let score = 0, lives = 3, level = 1;
+let player, bullets, enemies, enemyBullets, particles, stars;
+let keys = {};
+let shootCooldown = 0;
+let enemyDir = 1, enemyMoveTimer = 0, enemyDropQueued = false;
+let enemyShootTimer = 0;
+let animId;
+
+// --- Stars ---
+function makeStars() {
+  stars = Array.from({length: 80}, () => ({
+    x: Math.random() * W,
+    y: Math.random() * H,
+    r: Math.random() * 1.5 + 0.3,
+    speed: Math.random() * 0.4 + 0.1,
+    alpha: Math.random() * 0.6 + 0.2
+  }));
+}
+
+function initGame() {
+  score = 0; lives = 3; level = 1;
+  makeStars();
+  initLevel();
+}
+
+function initLevel() {
+  player = { x: W / 2, y: H - 50, w: 36, h: 28, speed: 5, invincible: 0 };
+  bullets = [];
+  enemyBullets = [];
+  particles = [];
+  shootCooldown = 0;
+
+  // Build enemy grid
+  enemies = [];
+  const rows = Math.min(3 + Math.floor(level / 2), 5);
+  const cols = Math.min(8 + level - 1, 11);
+  const gapX = Math.floor((W - 60) / cols);
+  const gapY = 44;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      enemies.push({
+        x: 30 + c * gapX + gapX / 2,
+        y: 55 + r * gapY,
+        w: 28, h: 22,
+        row: r, alive: true
+      });
+    }
+  }
+  enemyDir = 1;
+  enemyMoveTimer = 0;
+  enemyDropQueued = false;
+  enemyShootTimer = 0;
+}
+
+// --- Input ---
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Space') e.preventDefault();
+  if (e.code === 'Enter') {
+    if (state === 'title' || state === 'gameover' || state === 'win') {
+      if (state !== 'win') initGame();
+      else { level++; initLevel(); }
+      state = 'playing';
+      overlay.classList.add('hidden');
+    }
+  }
+});
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// --- Particles ---
+function spawnExplosion(x, y, color, count = 12) {
+  for (let i = 0; i < count; i++) {
+    const angle = (Math.PI * 2 * i) / count + Math.random() * 0.5;
+    const speed = Math.random() * 3 + 1;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1, decay: Math.random() * 0.04 + 0.02,
+      r: Math.random() * 3 + 1,
+      color
+    });
+  }
+}
+
+// --- Update ---
+function update() {
+  if (state !== 'playing') return;
+
+  // Stars scroll
+  stars.forEach(s => { s.y += s.speed; if (s.y > H) s.y = 0; });
+
+  // Player move
+  if (keys['ArrowLeft'] || keys['KeyA']) player.x = Math.max(player.w / 2, player.x - player.speed);
+  if (keys['ArrowRight'] || keys['KeyD']) player.x = Math.min(W - player.w / 2, player.x + player.speed);
+
+  // Player shoot
+  if (shootCooldown > 0) shootCooldown--;
+  if ((keys['Space']) && shootCooldown === 0) {
+    bullets.push({ x: player.x, y: player.y - player.h / 2, w: 4, h: 14, speed: 10 });
+    shootCooldown = 14;
+  }
+
+  // Player invincibility
+  if (player.invincible > 0) player.invincible--;
+
+  // Move player bullets
+  bullets = bullets.filter(b => {
+    b.y -= b.speed;
+    return b.y + b.h > 0;
+  });
+
+  // Move enemy bullets
+  enemyBullets = enemyBullets.filter(b => {
+    b.y += b.speed;
+    return b.y < H + 10;
+  });
+
+  // Enemy movement
+  const alive = enemies.filter(e => e.alive);
+  if (alive.length === 0) {
+    state = 'win';
+    showOverlay('LEVEL CLEAR!', `Score: ${score}`, 'Press ENTER for next wave');
+    return;
+  }
+
+  const interval = Math.max(8, 28 - level * 2 - Math.floor((enemies.length - alive.length) / 4));
+  enemyMoveTimer++;
+  if (enemyMoveTimer >= interval) {
+    enemyMoveTimer = 0;
+    const leftmost = Math.min(...alive.map(e => e.x - e.w / 2));
+    const rightmost = Math.max(...alive.map(e => e.x + e.w / 2));
+    const step = 12;
+    if (!enemyDropQueued) {
+      if ((enemyDir === 1 && rightmost + step > W - 10) ||
+          (enemyDir === -1 && leftmost - step < 10)) {
+        enemyDropQueued = true;
+      }
+    }
+    if (enemyDropQueued) {
+      enemies.forEach(e => { if (e.alive) e.y += 22; });
+      enemyDir *= -1;
+      enemyDropQueued = false;
+    } else {
+      enemies.forEach(e => { if (e.alive) e.x += enemyDir * step; });
+    }
+  }
+
+  // Enemy reached player row → game over
+  if (alive.some(e => e.y + e.h / 2 >= player.y - player.h / 2)) {
+    loseLife(true);
+    return;
+  }
+
+  // Enemy shoot
+  enemyShootTimer++;
+  const shootInterval = Math.max(30, 90 - level * 8);
+  if (enemyShootTimer >= shootInterval) {
+    enemyShootTimer = 0;
+    const shooters = alive.filter(e => {
+      const col = e.x;
+      return !alive.some(o => o !== e && Math.abs(o.x - col) < 10 && o.y > e.y);
+    });
+    if (shooters.length > 0) {
+      const s = shooters[Math.floor(Math.random() * shooters.length)];
+      enemyBullets.push({ x: s.x, y: s.y + s.h / 2, w: 4, h: 12, speed: 4 + level * 0.5 });
+    }
+  }
+
+  // Bullet vs enemy collision
+  bullets.forEach(b => {
+    enemies.forEach(e => {
+      if (!e.alive) return;
+      if (b.x > e.x - e.w / 2 && b.x < e.x + e.w / 2 &&
+          b.y < e.y + e.h / 2 && b.y + b.h > e.y - e.h / 2) {
+        e.alive = false;
+        b.dead = true;
+        const pts = (3 - e.row) * 10 + 10;
+        score += pts;
+        spawnExplosion(e.x, e.y, e.row < 1 ? '#e94560' : e.row < 2 ? '#f9a825' : '#a8dadc');
+      }
+    });
+  });
+  bullets = bullets.filter(b => !b.dead);
+
+  // Enemy bullet vs player
+  if (player.invincible === 0) {
+    enemyBullets.forEach(b => {
+      if (b.x > player.x - player.w / 2 && b.x < player.x + player.w / 2 &&
+          b.y + b.h > player.y - player.h / 2 && b.y < player.y + player.h / 2) {
+        b.dead = true;
+        loseLife();
+      }
+    });
+    enemyBullets = enemyBullets.filter(b => !b.dead);
+  }
+
+  // Particles
+  particles.forEach(p => {
+    p.x += p.vx; p.y += p.vy;
+    p.vx *= 0.94; p.vy *= 0.94;
+    p.life -= p.decay;
+  });
+  particles = particles.filter(p => p.life > 0);
+
+  updateHUD();
+}
+
+function loseLife(instant = false) {
+  lives--;
+  spawnExplosion(player.x, player.y, '#e94560', 24);
+  if (lives <= 0) {
+    state = 'gameover';
+    showOverlay('GAME OVER', `Final Score: ${score}`, 'Press ENTER to restart');
+  } else {
+    player.x = W / 2;
+    player.invincible = 120;
+    if (instant) { bullets = []; enemyBullets = []; }
+  }
+  updateHUD();
+}
+
+function updateHUD() {
+  document.getElementById('score-val').textContent = score;
+  document.getElementById('level-val').textContent = level;
+  document.getElementById('lives-val').textContent = '♥ '.repeat(lives).trim() || '—';
+}
+
+function showOverlay(title, msg, sub) {
+  olTitle.textContent = title;
+  olMsg.textContent = msg;
+  olSub.textContent = sub;
+  overlay.classList.remove('hidden');
+}
+
+// --- Draw ---
+function drawStars() {
+  stars.forEach(s => {
+    ctx.globalAlpha = s.alpha;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+}
+
+function drawPlayer() {
+  if (player.invincible > 0 && Math.floor(player.invincible / 5) % 2 === 0) return;
+  const x = player.x, y = player.y;
+  // Body
+  ctx.fillStyle = '#4fc3f7';
+  ctx.beginPath();
+  ctx.moveTo(x, y - player.h / 2);
+  ctx.lineTo(x - player.w / 2, y + player.h / 2);
+  ctx.lineTo(x - player.w / 4, y + player.h / 2 - 6);
+  ctx.lineTo(x, y + player.h / 2 - 10);
+  ctx.lineTo(x + player.w / 4, y + player.h / 2 - 6);
+  ctx.lineTo(x + player.w / 2, y + player.h / 2);
+  ctx.closePath();
+  ctx.fill();
+  // Cockpit
+  ctx.fillStyle = '#0288d1';
+  ctx.beginPath();
+  ctx.ellipse(x, y - 2, 6, 9, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Engine glow
+  ctx.fillStyle = '#e94560';
+  ctx.shadowColor = '#e94560';
+  ctx.shadowBlur = 10;
+  ctx.beginPath();
+  ctx.ellipse(x, y + player.h / 2 - 4, 5, 4, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+}
+
+function drawEnemy(e) {
+  const x = e.x, y = e.y;
+  const colors = ['#e94560', '#f9a825', '#a8dadc', '#ce93d8', '#80cbc4'];
+  const col = colors[e.row % colors.length];
+  ctx.fillStyle = col;
+  ctx.shadowColor = col;
+  ctx.shadowBlur = 6;
+  if (e.row === 0) {
+    // Top row: angular ship
+    ctx.beginPath();
+    ctx.moveTo(x, y - e.h / 2);
+    ctx.lineTo(x + e.w / 2, y + e.h / 2);
+    ctx.lineTo(x + e.w / 4, y + e.h / 4);
+    ctx.lineTo(x, y + e.h / 2);
+    ctx.lineTo(x - e.w / 4, y + e.h / 4);
+    ctx.lineTo(x - e.w / 2, y + e.h / 2);
+    ctx.closePath();
+    ctx.fill();
+  } else if (e.row === 1) {
+    // Mid row: saucer
+    ctx.beginPath();
+    ctx.ellipse(x, y, e.w / 2, e.h / 2.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.beginPath();
+    ctx.ellipse(x, y - 2, e.w / 4, e.h / 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    // Bottom rows: beetle
+    ctx.beginPath();
+    ctx.moveTo(x - e.w / 2, y - 4);
+    ctx.bezierCurveTo(x - e.w / 2, y - e.h / 2, x + e.w / 2, y - e.h / 2, x + e.w / 2, y - 4);
+    ctx.lineTo(x + e.w / 3, y + e.h / 2);
+    ctx.lineTo(x - e.w / 3, y + e.h / 2);
+    ctx.closePath();
+    ctx.fill();
+    // Antennae
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x - 6, y - e.h / 2 + 2);
+    ctx.lineTo(x - 10, y - e.h / 2 - 6);
+    ctx.moveTo(x + 6, y - e.h / 2 + 2);
+    ctx.lineTo(x + 10, y - e.h / 2 - 6);
+    ctx.stroke();
+  }
+  ctx.shadowBlur = 0;
+}
+
+function drawBullets() {
+  // Player bullets
+  bullets.forEach(b => {
+    ctx.fillStyle = '#00e5ff';
+    ctx.shadowColor = '#00e5ff';
+    ctx.shadowBlur = 8;
+    ctx.fillRect(b.x - b.w / 2, b.y, b.w, b.h);
+  });
+  // Enemy bullets
+  enemyBullets.forEach(b => {
+    ctx.fillStyle = '#ff5252';
+    ctx.shadowColor = '#ff5252';
+    ctx.shadowBlur = 8;
+    ctx.fillRect(b.x - b.w / 2, b.y, b.w, b.h);
+  });
+  ctx.shadowBlur = 0;
+}
+
+function drawParticles() {
+  particles.forEach(p => {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  drawStars();
+  if (state === 'playing' || state === 'win' || state === 'gameover' || state === 'dead') {
+    enemies.forEach(e => { if (e.alive) drawEnemy(e); });
+    drawPlayer();
+    drawBullets();
+    drawParticles();
+  }
+}
+
+// --- Loop ---
+function loop() {
+  update();
+  draw();
+  animId = requestAnimationFrame(loop);
+}
+
+// --- Init ---
+makeStars();
+showOverlay('SPACE SHOOTER', 'Defend the galaxy!', '← → MOVE  |  SPACE SHOOT  |  ENTER START');
+state = 'title';
+loop();
+</script>
+</body>
+</html>
